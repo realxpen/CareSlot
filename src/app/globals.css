@@ -32,3 +32,10 @@
 .conflictActions button{font-weight:700;border-radius:8px;padding:10px 13px}
 .conflictProceed{background:#5f4a22;color:#fff;border:1px solid #5f4a22}
 .conflictDismiss{background:transparent;color:#60451b;border:1px solid #c7a36f}
+
+/* Six-doctor demo schedule filtering */
+.slotToolbar{margin-top:20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.slotToolbar label{font-size:13px;font-weight:700;color:#496652}
+.slotToolbar select{min-width:220px;max-width:100%;background:#fbfdf9;border:1px solid #d9e4d5;border-radius:9px;padding:11px 13px;color:#20372e;outline-color:#5b8766}
+.slotSummary{font-size:12px;color:#718477;margin-left:auto}
+@media(max-width:550px){.slotToolbar{align-items:stretch;flex-direction:column}.slotSummary{margin-left:0}}

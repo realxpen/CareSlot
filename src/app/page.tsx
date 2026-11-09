@@ -3,6 +3,7 @@
 import {useEffect,useState,type FormEvent} from 'react';
 import type {Booking,Slot} from '@/lib/types';
 import {findPatientTimeConflict} from '@/lib/patient-conflicts';
+import {buildDemoSlots} from '@/lib/demo-slots';
 
 type ConflictPrompt={slotId:string;email:string;heading:string;message:string};
 
@@ -17,23 +18,12 @@ async function callApi<T extends object>(path:string,key:string,method='GET',bod
   return {ok:res.ok,status:res.status,data};
 }
 
-function demoSlots() {
-  const slots=[];
-  const physicians=['Dr Ade','Dr Okafor','Dr Hassan'];
-  const startDay=new Date();startDay.setUTCDate(startDay.getUTCDate()+2);
-  startDay.setUTCHours(0,0,0,0);
-  for(let day=0;day<3;day++) for(let n=0;n<3;n++) {
-    const begin=new Date(startDay.getTime()+day*86400000+(9+n*2)*3600000);
-    const end=new Date(begin.getTime()+30*60000);
-    slots.push({id:`demo-${day}-${n}`,provider:physicians[n],start:begin.toISOString(),end:end.toISOString()});
-  }
-  return slots;
-}
 
 export default function Home() {
   const [key,setKey]=useState('');
   const [connected,setConnected]=useState(false);
   const [slots,setSlots]=useState<Slot[]>([]);
+  const [doctorFilter,setDoctorFilter]=useState('all');
   const [selected,setSelected]=useState('');
   const [name,setName]=useState('');
   const [email,setEmail]=useState('');
@@ -65,11 +55,11 @@ export default function Home() {
 
   async function seed() {
     if (!confirm('Replace ALL appointment slots and DELETE existing bookings? Use only for a fresh demo.')) return;
-    setBusy(true);setMessage('');setBooking(null);
+    setBusy(true);setMessage('');setBooking(null);setDoctorFilter('all');setSelected('');
     setHistoryBookings([]);setHistoryCursor(null);setHistorySearched(false);setHistoryError('');
     setConflictPrompt(null);
     try {
-      const res=await callApi<{ok:boolean}>('/reset',key,'POST',{slots:demoSlots()});
+      const res=await callApi<{ok:boolean}>('/reset',key,'POST',{slots:buildDemoSlots()});
       if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
       await refresh();setMessage('Sample appointments created. Choose an available time.');
     } catch(e) {setMessage(e instanceof Error?e.message:'Could not create slots');}
@@ -204,7 +194,9 @@ export default function Home() {
   };
 
   const chosen=slots.find(s=>s.id===selected);
-  const available=slots.filter(s=>s.available);
+  const doctors=Array.from(new Set(slots.map(s=>s.provider))).sort((a,b)=>a.localeCompare(b));
+  const visibleSlots=slots.filter(s=>doctorFilter==='all'||s.provider===doctorFilter);
+  const available=visibleSlots.filter(s=>s.available);
 
   return <main>
     <header className="topbar"><div className="logo"><span className="logoIcon">✳</span> CareSlot</div><span className="eyebrow">CLINIC APPOINTMENTS</span></header>
@@ -229,7 +221,17 @@ export default function Home() {
           <span className="count">{available.length} available</span></div>
         {!connected?<p className="empty">Enter your API key above to see available appointments.</p>:
           slots.length===0?<div className="empty">No slots are set up yet. <button className="linkButton" type="button" disabled={busy} onClick={()=>void seed()}>Create demo slots</button></div>:
-          <><div className="slotGrid">{slots.map(slot=><button className={`slot ${selected===slot.id?'selected':''}`} type="button" key={slot.id}
+          <><div className="slotToolbar">
+            <label htmlFor="doctorFilter">Filter by doctor</label>
+            <select id="doctorFilter" value={doctorFilter} onChange={e=>{
+              setDoctorFilter(e.target.value);setSelected('');setConflictPrompt(null);
+            }}>
+              <option value="all">All doctors ({doctors.length})</option>
+              {doctors.map(doctor=><option key={doctor} value={doctor}>{doctor}</option>)}
+            </select>
+            <span className="slotSummary">Showing {visibleSlots.length} of {slots.length} appointment times</span>
+          </div>
+          <div className="slotGrid">{visibleSlots.map(slot=><button className={`slot ${selected===slot.id?'selected':''}`} type="button" key={slot.id}
             onClick={()=>{setSelected(slot.id);setConflictPrompt(null);}} disabled={!slot.available||busy}>
             <span className="slotStatus">{slot.available?'● Available':'○ Booked'}</span>
             <strong>{slot.provider}</strong>

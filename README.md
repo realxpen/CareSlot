@@ -29,6 +29,29 @@ A full-stack Next.js + TypeScript + Neon PostgreSQL application implementing the
    ```
 5. Open http://localhost:3000, paste your assessment booking API key in the **Booking API key** field and click **Connect**. Then choose **Create demo slots** (this calls `/reset` and clears all existing bookings), book a slot and verify the confirmation.
 
+## Six-doctor demo schedule
+
+CareSlot's demo generator now creates **36 appointments** (six doctors × two times × three future days), with 30-minute slots shown in Lagos time (WAT). The timing intentionally includes overlapping appointments across doctors.
+
+| Doctor | Daily WAT times |
+|---|---|
+| Dr Ade | 09:00, 13:00 |
+| Dr Okafor | 09:15, 13:15 |
+| Dr Hassan | 09:30, 13:30 |
+| Dr Balogun | 10:00, 14:00 |
+| Dr Nwosu | 10:30, 14:30 |
+| Dr Ibrahim | 11:00, 15:00 |
+
+The website now has a doctor filter. This affects demo data only; the assessment API contract is unchanged.
+
+**Pulling the code does not automatically change existing database slots.** Clicking "Reset demo slots" calls Koya's mandatory `POST /reset`, which deletes all bookings. To add the new doctor times without resetting existing bookings, use the optional **add-only** script *only on an isolated development database*:
+
+```powershell
+node --experimental-strip-types --env-file=.env.local scripts/add-demo-doctors.mjs --yes
+```
+
+It inserts missing `demo-v2-...` slots without deleting or overwriting existing data. Refresh CareSlot afterward. Do not run this against a real clinic or production database.
+
 ## Patient appointment overlap advisory (assessment-safe)
 
 The website checks whether an email already has a **confirmed** appointment whose time interval overlaps a selected slot. It uses the existing authenticated `GET /bookings?email=...` API (including cursor pagination) and compares its confirmed booking slot times against `GET /slots`. Two appointments that meet exactly at the boundary (e.g. 09:00–09:30 and 09:30–10:00) are permitted; cancelled bookings do not count.
