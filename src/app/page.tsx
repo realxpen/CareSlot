@@ -2,6 +2,9 @@
 
 import {useEffect,useState,type FormEvent} from 'react';
 import type {Booking,Slot} from '@/lib/types';
+import {findPatientTimeConflict} from '@/lib/patient-conflicts';
+
+type ConflictPrompt={slotId:string;email:string;heading:string;message:string};
 
 type Reply<T>={ok:boolean;status:number;data:T & {error?:string}};
 
@@ -44,6 +47,7 @@ export default function Home() {
   const [historySearched,setHistorySearched]=useState(false);
   const [historyBusy,setHistoryBusy]=useState(false);
   const [historyError,setHistoryError]=useState('');
+  const [conflictPrompt,setConflictPrompt]=useState<ConflictPrompt|null>(null);
 
   useEffect(()=>{const saved=sessionStorage.getItem('koya_demo_api_key');if(saved)setKey(saved);},[]);
 
@@ -63,6 +67,7 @@ export default function Home() {
     if (!confirm('Replace ALL appointment slots and DELETE existing bookings? Use only for a fresh demo.')) return;
     setBusy(true);setMessage('');setBooking(null);
     setHistoryBookings([]);setHistoryCursor(null);setHistorySearched(false);setHistoryError('');
+    setConflictPrompt(null);
     try {
       const res=await callApi<{ok:boolean}>('/reset',key,'POST',{slots:demoSlots()});
       if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
@@ -71,18 +76,83 @@ export default function Home() {
     finally {setBusy(false);}
   }
 
+  // Read the existing authenticated booking-history API; do not change its contract.
+  // Handle all cursor pages so an older appointment cannot escape the preflight check.
+  async function allBookingsForEmail(patientEmail:string):Promise<Booking[]> {
+    const bookings:Booking[]=[];
+    const seen=new Set<string>();
+    let cursor:string|null=null;
+    while(true) {
+      const params=new URLSearchParams({email:patientEmail,limit:'50'});
+      if(cursor)params.set('cursor',cursor);
+      const result=await callApi<{bookings:Booking[];next_cursor:string|null}>(
+        `/bookings?${params.toString()}`,key
+      );
+      if(!result.ok)throw new Error(result.data.error||`HTTP ${result.status}`);
+      if(!Array.isArray(result.data.bookings))throw new Error('Unexpected booking history response');
+      bookings.push(...result.data.bookings);
+      const next=result.data.next_cursor;
+      if(!next)break;
+      if(seen.has(next))throw new Error('Repeated booking history cursor');
+      seen.add(next);
+      cursor=next;
+    }
+    return bookings;
+  }
+
+  async function createAppointment() {
+    const result=await callApi<Booking>('/bookings',key,'POST',{slot_id:selected,name,email});
+    if(!result.ok)throw new Error(result.data.error||`HTTP ${result.status}`);
+    setBooking(result.data);setLookupEmail(result.data.email);
+    setHistoryBookings([]);setHistoryCursor(null);setHistorySearched(false);
+    setConflictPrompt(null);
+    await refresh();
+    setMessage('Your appointment has been confirmed.');
+  }
+
   async function submit(e:FormEvent) {
     e.preventDefault();
     if(!selected){setMessage('Choose an appointment time.');return;}
-    setBusy(true);setMessage('');
+    setBusy(true);setMessage('');setConflictPrompt(null);
+    const normalized=email.trim().toLowerCase();
     try {
-      const res=await callApi<Booking>('/bookings',key,'POST',{slot_id:selected,name,email});
-      if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
-      setBooking(res.data);setLookupEmail(res.data.email);
-      setHistoryBookings([]);setHistoryCursor(null);setHistorySearched(false);
-      setMessage('Your appointment has been confirmed.');
-      await refresh();
-    } catch(e) {setMessage(e instanceof Error?e.message:'Could not book appointment');}
+      // UI-only preflight. Koya's POST /bookings must remain permissive for
+      // different slot IDs even if the patient's appointment times overlap.
+      let previous:Booking[];
+      try {
+        previous=await allBookingsForEmail(normalized);
+      } catch(error) {
+        const reason=error instanceof Error?error.message:'Unknown error';
+        setConflictPrompt({slotId:selected,email:normalized,
+          heading:'Could not check your existing appointments',
+          message:`The booking-history check failed (${reason}). You can retry or continue without this advisory check for the assessment.`});
+        return;
+      }
+      const conflict=findPatientTimeConflict(previous,slots,selected);
+      if(conflict) {
+        const date=new Date(conflict.slot.start).toLocaleString('en-NG',
+          {dateStyle:'medium',timeStyle:'short',timeZone:'Africa/Lagos'});
+        setConflictPrompt({slotId:selected,email:normalized,
+          heading:'Possible appointment time conflict',
+          message:`You already have a confirmed appointment with ${conflict.slot.provider} at ${date} WAT, which overlaps the selected time. Choose a different slot or continue for this assessment demo.`});
+        return;
+      }
+      await createAppointment();
+    } catch(error) {
+      setMessage(error instanceof Error?error.message:'Could not book appointment');
+    } finally {setBusy(false);}
+  }
+
+  async function continueDespiteConflict() {
+    if(!conflictPrompt || selected!==conflictPrompt.slotId ||
+       email.trim().toLowerCase()!==conflictPrompt.email) {
+      setConflictPrompt(null);
+      setMessage('Your selection changed. Please check the appointment again.');
+      return;
+    }
+    setBusy(true);setMessage('');
+    try {await createAppointment();}
+    catch(error) {setMessage(error instanceof Error?error.message:'Could not book appointment');}
     finally {setBusy(false);}
   }
 
@@ -149,7 +219,7 @@ export default function Home() {
         <form className="connectRow" onSubmit={e=>{e.preventDefault();void refresh();}}>
           <label className="srOnly" htmlFor="apiKey">Booking API key</label>
           <input id="apiKey" type="password" placeholder="Paste booking API key" value={key}
-            onChange={e=>{setKey(e.target.value);setConnected(false);}} required/>
+            onChange={e=>{setKey(e.target.value);setConnected(false);setConflictPrompt(null);}} required/>
           <button type="submit" disabled={busy||!key}>{connected?'Refresh':'Connect'} <span aria-hidden="true">↗</span></button>
         </form>
         {connected&&<div className="connected">● Connected to the booking API</div>}
@@ -160,7 +230,7 @@ export default function Home() {
         {!connected?<p className="empty">Enter your API key above to see available appointments.</p>:
           slots.length===0?<div className="empty">No slots are set up yet. <button className="linkButton" type="button" disabled={busy} onClick={()=>void seed()}>Create demo slots</button></div>:
           <><div className="slotGrid">{slots.map(slot=><button className={`slot ${selected===slot.id?'selected':''}`} type="button" key={slot.id}
-            onClick={()=>setSelected(slot.id)} disabled={!slot.available||busy}>
+            onClick={()=>{setSelected(slot.id);setConflictPrompt(null);}} disabled={!slot.available||busy}>
             <span className="slotStatus">{slot.available?'● Available':'○ Booked'}</span>
             <strong>{slot.provider}</strong>
             <span>{new Date(slot.start).toLocaleDateString('en-NG',{weekday:'short',month:'short',day:'numeric'})}</span>
@@ -172,9 +242,21 @@ export default function Home() {
           {chosen&&<p className="chosen">✳ {chosen.provider} · {new Date(chosen.start).toLocaleString('en-NG',{dateStyle:'medium',timeStyle:'short',timeZone:'Africa/Lagos'})}</p>}</div>
         <form onSubmit={e=>void submit(e)} className="bookingForm">
           <label htmlFor="patientName">Full name</label><input id="patientName" autoComplete="name" value={name} onChange={e=>setName(e.target.value)} placeholder="Ada Obi" required />
-          <label htmlFor="patientEmail">Email address</label><input id="patientEmail" type="email" autoComplete="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="ada@example.com" required />
+          <label htmlFor="patientEmail">Email address</label><input id="patientEmail" type="email" autoComplete="email" value={email} onChange={e=>{setEmail(e.target.value);setConflictPrompt(null);}} placeholder="ada@example.com" required />
           <button type="submit" disabled={busy||!connected||!chosen||!chosen.available}>{busy?'Working…':'Confirm appointment'} <span aria-hidden="true">↗</span></button>
         </form>
+        {conflictPrompt&&<aside className="conflictNotice" role="alert" aria-live="polite">
+          <strong>{conflictPrompt.heading}</strong>
+          <p>{conflictPrompt.message}</p>
+          <div className="conflictActions">
+            <button type="button" className="conflictProceed"
+              disabled={busy||!connected||!chosen?.available}
+              onClick={()=>void continueDespiteConflict()}>Continue anyway (assessment)</button>
+            <button type="button" className="conflictDismiss" onClick={()=>setConflictPrompt(null)}>
+              Choose another time
+            </button>
+          </div>
+        </aside>}
       </section>
       {message&&<div className="notice" role="status">{message}</div>}
       {booking&&<section className="confirmation" aria-label="Booking confirmation">
