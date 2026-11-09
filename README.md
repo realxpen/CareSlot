@@ -29,6 +29,21 @@ A full-stack Next.js + TypeScript + Neon PostgreSQL application implementing the
    ```
 5. Open http://localhost:3000, paste your assessment booking API key in the **Booking API key** field and click **Connect**. Then choose **Create demo slots** (this calls `/reset` and clears all existing bookings), book a slot and verify the confirmation.
 
+## Manual booking persistence and history test (no reset)
+
+**Use the development database, not production.** Unlike the destructive smoke test, these steps preserve existing bookings:
+
+1. Start the local app with `npm run dev` and connect using `BOOKING_API_KEY` on http://localhost:3000.
+2. Create a booking using a test email and note its slot, status, and reference.
+3. Find **Step 04 — My appointments**, enter the same email, and click **Find my appointments**. Confirm the record appears as **confirmed**.
+4. Stop Next.js with **Ctrl+C**, then restart using `npm run dev`. Reload the page, reconnect if necessary, and search the same email.
+5. Verify that the booking **still exists**. It is in PostgreSQL, not browser memory.
+6. Click **Cancel appointment** on the history item, confirm the action, and check the status becomes **cancelled** and its slot is available again.
+7. Restart the server again and search the same email; the cancelled history record should still be listed.
+8. Optional: create six bookings for the same email across different slots to test **Load more appointments** (five per page).
+
+This is an assessment demonstration. Because the API uses a shared reviewer key and email-only lookup, **do not treat it as patient authentication or use real patient records**. Koya does not ask for a reschedule endpoint, so use cancellation followed by a new booking if you need to change slots.
+
 ## Manual API check (PowerShell)
 
 ```powershell

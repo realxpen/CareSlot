@@ -37,6 +37,13 @@ export default function Home() {
   const [booking,setBooking]=useState<Booking|null>(null);
   const [busy,setBusy]=useState(false);
   const [message,setMessage]=useState('');
+  const [lookupEmail,setLookupEmail]=useState('');
+  const [historyEmail,setHistoryEmail]=useState('');
+  const [historyBookings,setHistoryBookings]=useState<Booking[]>([]);
+  const [historyCursor,setHistoryCursor]=useState<string|null>(null);
+  const [historySearched,setHistorySearched]=useState(false);
+  const [historyBusy,setHistoryBusy]=useState(false);
+  const [historyError,setHistoryError]=useState('');
 
   useEffect(()=>{const saved=sessionStorage.getItem('koya_demo_api_key');if(saved)setKey(saved);},[]);
 
@@ -55,6 +62,7 @@ export default function Home() {
   async function seed() {
     if (!confirm('Replace ALL appointment slots and DELETE existing bookings? Use only for a fresh demo.')) return;
     setBusy(true);setMessage('');setBooking(null);
+    setHistoryBookings([]);setHistoryCursor(null);setHistorySearched(false);setHistoryError('');
     try {
       const res=await callApi<{ok:boolean}>('/reset',key,'POST',{slots:demoSlots()});
       if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
@@ -70,22 +78,60 @@ export default function Home() {
     try {
       const res=await callApi<Booking>('/bookings',key,'POST',{slot_id:selected,name,email});
       if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
-      setBooking(res.data);setMessage('Your appointment has been confirmed.');
+      setBooking(res.data);setLookupEmail(res.data.email);
+      setHistoryBookings([]);setHistoryCursor(null);setHistorySearched(false);
+      setMessage('Your appointment has been confirmed.');
       await refresh();
     } catch(e) {setMessage(e instanceof Error?e.message:'Could not book appointment');}
     finally {setBusy(false);}
   }
 
-  async function cancelBooking() {
-    if(!booking)return;
-    setBusy(true);
+  async function findBookings(append=false, cursor:string|null=null, requestedEmail=lookupEmail) {
+    const normalized=requestedEmail.trim().toLowerCase();
+    if (!connected || !normalized) {
+      setHistoryError('Connect with your assessment key and enter an email.');
+      return;
+    }
+    setHistoryBusy(true);setHistoryError('');
     try {
-      const res=await callApi<Booking>(`/bookings/${encodeURIComponent(booking.id)}`,key,'DELETE');
-      if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
-      setBooking(res.data);await refresh();setMessage('Appointment cancelled. The slot is available again.');
-    } catch(e) {setMessage(e instanceof Error?e.message:'Could not cancel');}
-    finally {setBusy(false);}
+      const query=new URLSearchParams({email:normalized,limit:'5'});
+      if (append && cursor) query.set('cursor',cursor);
+      const res=await callApi<{bookings:Booking[];next_cursor:string|null}>(
+        `/bookings?${query.toString()}`,key
+      );
+      if (!res.ok) throw new Error(res.data.error||`Error ${res.status}`);
+      setHistoryBookings(previous=>append?[...previous,...res.data.bookings]:res.data.bookings);
+      setHistoryCursor(res.data.next_cursor);
+      setHistoryEmail(normalized);
+      setHistorySearched(true);
+    } catch(e) {
+      setHistoryError(e instanceof Error?e.message:'Could not retrieve appointments');
+    } finally {setHistoryBusy(false);}
   }
+
+  async function cancelById(id:string) {
+    if (!confirm('Cancel this appointment? The slot will become available to others.')) return;
+    setBusy(true);setHistoryError('');
+    try {
+      const res=await callApi<Booking>(`/bookings/${encodeURIComponent(id)}`,key,'DELETE');
+      if(!res.ok)throw new Error(res.data.error||`Error ${res.status}`);
+      setBooking(previous=>previous?.id===id?res.data:previous);
+      setHistoryBookings(previous=>previous.map(b=>b.id===id?res.data:b));
+      await refresh();
+      setMessage('Appointment cancelled. The slot is available again.');
+    } catch(e) {
+      const text=e instanceof Error?e.message:'Could not cancel';
+      setHistoryError(text);setMessage(text);
+    } finally {setBusy(false);}
+  }
+
+  const slotDetails=(slotId:string) => slots.find(slot=>slot.id===slotId);
+  const formattedSlot=(slotId:string) => {
+    const slot=slotDetails(slotId);
+    if(!slot) return `Slot ${slotId}`;
+    return `${slot.provider} · ${new Date(slot.start).toLocaleString('en-NG',
+      {dateStyle:'medium',timeStyle:'short',timeZone:'Africa/Lagos'})} WAT`;
+  };
 
   const chosen=slots.find(s=>s.id===selected);
   const available=slots.filter(s=>s.available);
@@ -135,8 +181,56 @@ export default function Home() {
         <p className="overline">YOUR CONFIRMATION</p><h2>{booking.status==='confirmed'?'You’re booked.':'Booking cancelled.'}</h2>
         <p>Booking reference: <code>{booking.id}</code></p><p>Patient: {booking.name} · {booking.email}</p>
         <p>Status: <strong>{booking.status}</strong></p>
-        {booking.status==='confirmed'&&<button type="button" disabled={busy} onClick={()=>void cancelBooking()} className="cancel">Cancel this appointment</button>}
+        {booking.status==='confirmed'&&<button type="button" disabled={busy} onClick={()=>void cancelById(booking.id)} className="cancel">Cancel this appointment</button>}
       </section>}
+      <section className="panel historyPanel" id="my-appointments" aria-label="My appointments">
+        <div className="sectionHeading historyHeading">
+          <div><p className="overline">STEP 04 · MANAGE</p><h2>My appointments</h2>
+            <p className="muted">Look up earlier bookings, including cancelled ones. This works after a page refresh or server restart.</p></div>
+          <span className="count">Booking history</span>
+        </div>
+        <form className="historySearch" onSubmit={e=>{e.preventDefault();void findBookings();}}>
+          <label htmlFor="lookupEmail">Email used when booking</label>
+          <div className="historySearchRow">
+            <input id="lookupEmail" type="email" autoComplete="email" value={lookupEmail}
+              onChange={e=>setLookupEmail(e.target.value)}
+              placeholder="ada@example.com" required/>
+            <button type="submit" disabled={!connected||historyBusy||busy}>
+              {historyBusy?'Loading…':'Find my appointments'}
+            </button>
+          </div>
+        </form>
+        <p className="historyNote">Assessment demo: the shared API key grants access to booking records.
+          A real clinic would verify patient identity before showing them.</p>
+        {historyError&&<p role="alert" className="historyError">{historyError}</p>}
+        {historySearched&&<>
+          <p className="historySummary">Appointments for <strong>{historyEmail}</strong></p>
+          {historyBookings.length===0?<p className="empty">No bookings found for this email. Check the address or book an appointment above.</p>:
+            <div className="historyList">
+              {historyBookings.map(item=><article className="historyItem" key={item.id}>
+                <div className="historyItemTop">
+                  <div>
+                    <strong>{formattedSlot(item.slot_id)}</strong>
+                    <p className="historyMeta">Patient: {item.name}</p>
+                    <p className="historyMeta">Booked: {new Date(item.created_at).toLocaleString('en-NG',
+                      {dateStyle:'medium',timeStyle:'short',timeZone:'Africa/Lagos'})} WAT</p>
+                  </div>
+                  <span className={`historyStatus ${item.status}`}>{item.status}</span>
+                </div>
+                <div className="historyItemBottom">
+                  <code className="bookingReference">{item.id}</code>
+                  {item.status==='confirmed'&&
+                    <button type="button" className="cancel" disabled={busy||historyBusy}
+                      onClick={()=>void cancelById(item.id)}>Cancel appointment</button>}
+                </div>
+              </article>)}
+            </div>}
+          {historyCursor&&<button type="button" className="loadMore" disabled={historyBusy||busy}
+              onClick={()=>void findBookings(true,historyCursor,historyEmail)}>
+              {historyBusy?'Loading…':'Load more appointments'}
+            </button>}
+        </>}
+      </section>
     </div><footer>CareSlot · A technical assessment project · Built with care</footer>
   </main>;
 }
