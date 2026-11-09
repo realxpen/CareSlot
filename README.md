@@ -101,7 +101,7 @@ npm.cmd ci
 
 ### 2. Prepare Neon PostgreSQL
 
-1. Open https://console.neon.tech and create or select an **isolated CareSlot-only** project/database. Do **not** use a Hustle, Swifna or other production application's database.
+1. Open https://console.neon.tech and create or select an **isolated CareSlot-only** project/database. 
 2. For safest testing, use a dedicated development Neon branch/database distinct from production.
 3. Open **SQL Editor**, choose the correct development database and run the **entire contents** of [`db/schema.sql`](db/schema.sql).
 4. Verify the schema has created `slots`, `bookings`, `idempotency_results` and `booking_attempts`, together with their indexes.
