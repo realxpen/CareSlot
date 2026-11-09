@@ -1,127 +1,375 @@
-# CareSlot — Koya Academy Cohort 4 clinic booking assessment
+# CareSlot — Clinic Appointment Booking
 
-A full-stack Next.js + TypeScript + Neon PostgreSQL application implementing the [official assessment API specification](https://koyaacademy.com/assessment-api).
+**Koya Academy Cohort 4 · AI Automation Developer Assessment**
 
-## Features
+CareSlot is a Next.js + TypeScript web application and a PostgreSQL-backed JSON API for booking clinic appointments. It implements the Koya clinic-booking contract, including protected endpoints, persistent bookings, cancellation, concurrency protection, idempotency, pagination and rate limiting. The patient-facing website adds appointment history, doctor filtering and an **advisory** same-patient time-overlap warning.
 
-- **Level 1:** `POST /reset`, `GET /slots`, `POST /bookings`, and `GET /bookings/{id}`; available slots and a patient-facing web page.
-- **Level 2:** `X-API-Key` authentication on *every API request*, trimming/lowercasing/validating booking details, rejecting past slots.
-- **Level 3:** atomic slot booking with `SELECT ... FOR UPDATE` and a **PostgreSQL partial unique index** to guarantee at most one confirmed booking for each slot; cancellation frees the slot.
-- **Level 4:** `Idempotency-Key` with request-body fingerprinting and transaction-level locks, cursor pagination for patient bookings.
-- **Level 5:** email-scoped rolling one-minute rate limiting, counting failed attempts and sending `Retry-After` on HTTP 429.
+**Repository:** https://github.com/realxpen/CareSlot  
+**Official contract:** https://koyaacademy.com/assessment-api/openapi.json  
+**Bundled contract:** [`docs/koya-openapi.json`](docs/koya-openapi.json)  
+**Vercel project:** https://vercel.com/swifnatechnologyltd/careslot  
+**Assessment submission:** https://tally.so/r/1WPoL4
 
-> Review requirements against the official OpenAPI spec before submission. This project has not been integration-tested against your Neon database or deployed until you complete the steps below.
+> **Assessment project, not a production medical system.** Use synthetic patients and an isolated database. The shared assessment API key is not patient authentication. Never store actual health information in this demo.
 
-## Setup on Windows (PowerShell)
+## Contents
 
-1. Create a **new, isolated Neon PostgreSQL database** at https://console.neon.tech. Do not reuse any production Hustle database or credentials.
-2. In Neon's SQL Editor, run the contents of **`db/schema.sql`**. This sets up persistence and the database-level double-booking safety constraint.
-3. In this project folder:
-   ```powershell
-   Copy-Item .env.example .env.local
-   notepad .env.local
-   ```
-   Replace the placeholder database connection string and `BOOKING_API_KEY` (generate a long random value; use a different key from Positionstack).
-4. Install dependencies and run the app:
-   ```powershell
-   npm install
-   npm run dev
-   ```
-5. Open http://localhost:3000, paste your assessment booking API key in the **Booking API key** field and click **Connect**. Then choose **Create demo slots** (this calls `/reset` and clears all existing bookings), book a slot and verify the confirmation.
+1. [What is implemented](#what-is-implemented)
+2. [Requirements and project structure](#requirements-and-project-structure)
+3. [Local setup (Windows / PowerShell)](#local-setup-windows--powershell)
+4. [Use the website](#use-the-website)
+5. [Six-doctor demo data](#six-doctor-demo-data)
+6. [Patient overlap warning](#patient-overlap-warning)
+7. [API contract and examples](#api-contract-and-examples)
+8. [Testing](#testing)
+9. [Deploy to Vercel](#deploy-to-vercel)
+10. [Koya assessment handoff](#koya-assessment-handoff)
+11. [Troubleshooting](#troubleshooting)
+12. [Security and known limitations](#security-and-known-limitations)
 
-## Six-doctor demo schedule
+## What is implemented
 
-CareSlot's demo generator now creates **36 appointments** (six doctors × two times × three future days), with 30-minute slots shown in Lagos time (WAT). The timing intentionally includes overlapping appointments across doctors.
+| Koya level | Functionality | Where |
+|---|---|---|
+| 1 | Reset slots; list available slots; create booking; retrieve booking; booking website | `/reset`, `/slots`, `/bookings`, `/bookings/:id` and `/` |
+| 2 | `X-API-Key` required on **every** API request; input validation, trimming, lowercase email, past-slot rejection | API routes and `src/lib/http.ts` |
+| 3 | Only one **confirmed** booking per slot, even under concurrent requests; cancel and free slot | `src/lib/booking.ts` and PostgreSQL unique partial index |
+| 4 | `Idempotency-Key` replay/conflict handling; email-filtered booking history with cursor pagination | `/bookings` |
+| 5 | Five booking attempts per email per rolling minute, including failures; sixth request gets `429` and `Retry-After` | `src/lib/booking.ts` |
 
-| Doctor | Daily WAT times |
+**Additional website features:** search previous appointments by email, view confirmed/cancelled bookings, cancel from history after a browser/server restart, paginate history, filter slots by doctor, generate six-doctor test schedules and warn about overlapping appointments.
+
+**Intentional compatibility decision:** the patient-overlap check is a **frontend advisory**, not a server-side rule. The Koya API must still accept two different available slot IDs for the same email, even when their times overlap; the frontend offers **Continue anyway (assessment)**. The server still strictly rejects two confirmed bookings of the **same slot**.
+
+## Requirements and project structure
+
+- Node.js **22 or newer**, with npm (a current LTS version is recommended). Node is needed for local Next.js, native `fetch`, test scripts and TypeScript stripping in the optional add-only seed script.
+- Git, VS Code or another editor, and an internet connection for Neon.
+- A **dedicated Neon PostgreSQL database** for this assessment. Prefer separate development and production branches/databases so destructive local tests cannot wipe deployed assessment data.
+- A long, random booking API key of your own choosing.
+- A GitHub account and Vercel account for deployment.
+
+```text
+CareSlot/
+├── db/schema.sql                   # PostgreSQL tables, indexes and constraints
+├── docs/koya-openapi.json          # Bundled assessment API contract
+├── scripts/
+│   ├── smoke.mjs                   # 37 API smoke checks (DESTRUCTIVE /reset)
+│   ├── add-demo-doctors.mjs        # Adds 36 demo slots; no delete/reset
+│   └── seed-conflict-demo.mjs      # Adds 3 overlap-specific test slots
+├── src/
+│   ├── app/
+│   │   ├── page.tsx                # Booking and history UI
+│   │   ├── globals.css             # Responsive styles
+│   │   ├── reset/route.ts
+│   │   ├── slots/route.ts
+│   │   ├── bookings/route.ts
+│   │   └── bookings/[id]/route.ts
+│   └── lib/
+│       ├── booking.ts              # Booking, idempotency and rate-limit logic
+│       ├── db.ts                   # PostgreSQL connection / transactions
+│       ├── http.ts                 # Authentication and JSON responses
+│       ├── demo-slots.ts           # Six-doctor demo schedule generator
+│       ├── patient-conflicts.ts    # UI advisory overlap calculation
+│       └── types.ts
+├── tests/                          # Non-destructive unit/structural tests
+├── .env.example                    # Placeholder names only; safe to commit
+└── .env.local                      # Your own secrets; gitignored; NEVER commit
+```
+
+## Local setup (Windows / PowerShell)
+
+### 1. Clone or update the project
+
+For a **new checkout**:
+
+```powershell
+git clone https://github.com/realxpen/CareSlot.git
+cd CareSlot
+npm.cmd ci
+```
+
+If you **already have CareSlot open**, run from its project directory:
+
+```powershell
+git switch main
+git pull origin main
+npm.cmd ci
+```
+
+`npm.cmd` is safe to use in PowerShell if running `npm` directly produces a PowerShell execution-policy error.
+
+### 2. Prepare Neon PostgreSQL
+
+1. Open https://console.neon.tech and create or select an **isolated CareSlot-only** project/database. Do **not** use a Hustle, Swifna or other production application's database.
+2. For safest testing, use a dedicated development Neon branch/database distinct from production.
+3. Open **SQL Editor**, choose the correct development database and run the **entire contents** of [`db/schema.sql`](db/schema.sql).
+4. Verify the schema has created `slots`, `bookings`, `idempotency_results` and `booking_attempts`, together with their indexes.
+5. Copy the Neon PostgreSQL connection string, preferably from the **Connect** panel with SSL enabled.
+
+The application uses PostgreSQL for persistent state. There is no in-memory booking store and no automatic database migration on startup.
+
+### 3. Configure local environment variables
+
+```powershell
+Copy-Item .env.example .env.local
+notepad .env.local
+```
+
+If `.env.local` already exists, **do not overwrite it**. Edit it instead.
+
+The local file must have these two variables:
+
+```dotenv
+DATABASE_URL=postgresql://YOUR_USER:YOUR_PASSWORD@YOUR_NEON_HOST/YOUR_DB?sslmode=require
+BOOKING_API_KEY=YOUR_OWN_LONG_RANDOM_SECRET
+```
+
+Replace **both** placeholders with real values. The key is the same one you enter into the *local assessment website* and send privately to Koya for their API checks.
+
+**Never** paste your real database URL or key in GitHub, screenshots, issues, README files, chat messages or public JavaScript. `.env.local` is covered by [`.gitignore`](.gitignore).
+
+### 4. Start the website
+
+```powershell
+npm.cmd run dev
+```
+
+Open **http://localhost:3000**. Keep this terminal running. If you need to run another command, open a **second** PowerShell terminal in the same project directory.
+
+When finished, stop Next.js with **Ctrl+C**.
+
+## Use the website
+
+1. **Step 01 — Connect:** Enter your `BOOKING_API_KEY` and select **Connect**. It is held in browser `sessionStorage` for that tab/session; the key is **not embedded** in the shipped frontend. The backend checks `X-API-Key` on every request.
+2. **Step 02 — Choose:** Browse available appointment slots, optionally **Filter by doctor**, and select a time. Booked slots cannot be selected.
+3. **Step 03 — Confirm:** Enter the patient's test name and email and select **Confirm appointment**. A successful booking creates a persistent record and confirmation reference.
+4. **Step 04 — My appointments:** Enter the same email under **Find my appointments**. You can see prior confirmed and cancelled bookings, load more results (five at a time) and cancel a confirmed booking. Cancelling frees the associated slot.
+5. **Refresh/restart:** A saved booking remains in Neon after a browser refresh or Next.js restart. Reconnect with the key if needed and look up the same email.
+
+The lookup requires **the shared assessment API key and the email address**; it is **not a secure patient login**. Do not expose this to real patients or use real medical records.
+
+### Rescheduling
+
+There is **no reschedule API endpoint** in Koya's specification. For this demo, cancel the existing booking and then choose another available time. This is not an atomic production-grade reschedule workflow.
+
+## Six-doctor demo data
+
+The website's demo generator creates **36 synthetic slots**: **6 doctors × 2 daily times × 3 future dates**, with 30-minute appointments shown in **West Africa Time (WAT, UTC+01:00)**.
+
+| Demo doctor | Daily times (WAT) |
 |---|---|
-| Dr Ade | 09:00, 13:00 |
-| Dr Okafor | 09:15, 13:15 |
-| Dr Hassan | 09:30, 13:30 |
-| Dr Balogun | 10:00, 14:00 |
-| Dr Nwosu | 10:30, 14:30 |
-| Dr Ibrahim | 11:00, 15:00 |
+| Dr Ade | 9:00 AM, 1:00 PM |
+| Dr Okafor | 9:15 AM, 1:15 PM |
+| Dr Hassan | 9:30 AM, 1:30 PM |
+| Dr Balogun | 10:00 AM, 2:00 PM |
+| Dr Nwosu | 10:30 AM, 2:30 PM |
+| Dr Ibrahim | 11:00 AM, 3:00 PM |
 
-The website now has a doctor filter. This affects demo data only; the assessment API contract is unchanged.
+The deliberately overlapping times allow you to demonstrate conflict warnings. The doctors are **fictional demo entries**, not a real clinic's availability.
 
-**Pulling the code does not automatically change existing database slots.** Clicking "Reset demo slots" calls Koya's mandatory `POST /reset`, which deletes all bookings. To add the new doctor times without resetting existing bookings, use the optional **add-only** script *only on an isolated development database*:
+### Safe option: add slots without deleting existing bookings
+
+**Development database only.** With `.env.local` pointing to your isolated development database:
 
 ```powershell
 node --experimental-strip-types --env-file=.env.local scripts/add-demo-doctors.mjs --yes
 ```
 
-It inserts missing `demo-v2-...` slots without deleting or overwriting existing data. Refresh CareSlot afterward. Do not run this against a real clinic or production database.
+This script inserts missing `demo-v2-...` slots and uses `ON CONFLICT (id) DO NOTHING`. It does **not** delete or replace existing appointments. Refresh the page, select **Refresh** in Step 01, and choose **All doctors** in the filter. If older doctors/slots exist, the total may be **more than 36**. The script generates dates relative to when you run it; running it on later dates may add newer slots.
 
-## Patient appointment overlap advisory (assessment-safe)
+### Destructive option: replace all demo slots
 
-The website checks whether an email already has a **confirmed** appointment whose time interval overlaps a selected slot. It uses the existing authenticated `GET /bookings?email=...` API (including cursor pagination) and compares its confirmed booking slot times against `GET /slots`. Two appointments that meet exactly at the boundary (e.g. 09:00–09:30 and 09:30–10:00) are permitted; cancelled bookings do not count.
+The site's **Create demo slots / Reset demo slots** action calls the contract-required **`POST /reset`**.
 
-The website shows a warning rather than silently booking a conflicting slot. For assessment compatibility, it also offers **Continue anyway (assessment)**. **No server-side behavior or endpoint is changed.** Koya's automated tests can continue to book different slot IDs, and PostgreSQL still blocks double-booking the same slot. This client-side preflight is advisory, not concurrency-safe enforcement: another booking can happen between the lookup and the POST.
+**WARNING: `/reset` deletes every booking and replaces the entire slots collection, including historical demo slots.** Only use it on a disposable assessment database whose contents you intend to replace. Do not use it simply to show the new six doctors if you want to preserve past bookings.
 
-For a manual overlap demo, use **only an isolated development Neon database**, then run:
+## Patient overlap warning
+
+Before booking through the website, CareSlot loads the test email's **entire paginated booking history** from the existing authenticated `GET /bookings?email=...` endpoint, then compares confirmed booking times against the selected slot.
+
+Overlap means:
+
+```text
+newStart < existingEnd AND newEnd > existingStart
+```
+
+- **9:00–9:30 and 9:15–9:45:** overlap → website warns.
+- **9:00–9:30 and 9:30–10:00:** back-to-back → no time overlap.
+- **Cancelled appointments:** ignored for the overlap advisory.
+- **Different days:** no overlap.
+- If history lookup fails, the website warns that it cannot check, rather than silently treating history as empty.
+
+The warning offers **Choose another time** and **Continue anyway (assessment)**. This is intentional: Koya's backend API rules and expected status codes must remain unchanged. The frontend warning is **not a concurrency-safe enforcement guarantee**, and it does not prevent other clients from calling the API directly.
+
+### Optional focused conflict demo
+
+The regular six-doctor schedule already contains overlapping times. If you need a smaller three-slot demonstration, on an **isolated development database only** run:
 
 ```powershell
 node --env-file=.env.local scripts/seed-conflict-demo.mjs --yes
 ```
 
-The script adds three uniquely identified demonstration slots **without resetting or deleting existing bookings**: 09:00–09:30, 09:15–09:45 (overlapping), and 09:30–10:00 (back-to-back), all on a future date in Lagos time. Book the first with a test email; try the second with that same email to see the warning, then the third to confirm adjacent slots are allowed. The warning includes an explicit assessment-only override. Do not run this against production or a real patient database.
+The script **adds**, without resetting, three slots around 9:00 AM, 9:15 AM and 9:30 AM WAT. Use a synthetic test email to book 9:00, try 9:15 (warning), then 9:30 (no overlap).
 
-## Manual booking persistence and history test (no reset)
+## API contract and examples
 
-**Use the development database, not production.** Unlike the destructive smoke test, these steps preserve existing bookings:
+**API base URL:** the application root, for example `http://localhost:3000` locally or the root HTTPS hostname of your verified Vercel deployment. Routes are **not** under `/api`.
 
-1. Start the local app with `npm run dev` and connect using `BOOKING_API_KEY` on http://localhost:3000.
-2. Create a booking using a test email and note its slot, status, and reference.
-3. Find **Step 04 — My appointments**, enter the same email, and click **Find my appointments**. Confirm the record appears as **confirmed**.
-4. Stop Next.js with **Ctrl+C**, then restart using `npm run dev`. Reload the page, reconnect if necessary, and search the same email.
-5. Verify that the booking **still exists**. It is in PostgreSQL, not browser memory.
-6. Click **Cancel appointment** on the history item, confirm the action, and check the status becomes **cancelled** and its slot is available again.
-7. Restart the server again and search the same email; the cancelled history record should still be listed.
-8. Optional: create six bookings for the same email across different slots to test **Load more appointments** (five per page).
+| Method | Endpoint | Purpose | Expected success |
+|---|---|---|---|
+| `POST` | `/reset` | Replace all slots and remove all bookings | `200` |
+| `GET` | `/slots` | List slots (earliest start first); optional exact `?provider=...` | `200` |
+| `POST` | `/bookings` | Create a confirmed booking | `201` |
+| `GET` | `/bookings/{id}` | Retrieve booking by ID | `200` |
+| `DELETE` | `/bookings/{id}` | Cancel booking, free slot | `200` |
+| `GET` | `/bookings?email=...` | Email booking history; `limit` (1–50, default 10), `cursor` | `200` |
 
-This is an assessment demonstration. Because the API uses a shared reviewer key and email-only lookup, **do not treat it as patient authentication or use real patient records**. Koya does not ask for a reschedule endpoint, so use cancellation followed by a new booking if you need to change slots.
+**Every endpoint requires `X-API-Key`.** Errors are JSON shaped as `{"error":"message"}`.
 
-## Manual API check (PowerShell)
+Important failure cases:
+
+| Response | Meaning |
+|---|---|
+| `400` | Invalid/missing booking details, started slot, invalid pagination |
+| `401` | Missing or incorrect API key |
+| `404` | Unknown slot or booking |
+| `409` | Slot already has a confirmed booking; cancelling an already cancelled booking |
+| `422` | Same `Idempotency-Key` sent with a different request body |
+| `429` | Sixth same-email booking attempt within a minute; includes integer `Retry-After` header |
+
+Booking emails are trimmed and lowercased; names are trimmed. Five **attempts**, including failed attempts, are permitted per email in a rolling minute. Booking operations are transactional, and the PostgreSQL partial unique index prevents two concurrent confirmed bookings from sharing one slot. Replaying an identical request with an identical optional `Idempotency-Key` returns the original response and booking ID.
+
+### Read-only PowerShell API checks
+
+Keep the local server running in one terminal. In another terminal in the project folder, run:
+
+**Unauthenticated access must return 401:**
 
 ```powershell
-$apiKey = "PASTE_YOUR_OWN_BOOKING_API_KEY"   # Do not commit it
-$headers = @{ "X-API-Key" = $apiKey }
-$start = (Get-Date).ToUniversalTime().AddDays(3).ToString("yyyy-MM-ddTHH:mm:ssZ")
-$end = (Get-Date).ToUniversalTime().AddDays(3).AddMinutes(30).ToString("yyyy-MM-ddTHH:mm:ssZ")
-$body = @{ slots = @(@{ id="s1"; provider="Dr Ade"; start=$start; end=$end }) } | ConvertTo-Json -Depth 5
-Invoke-RestMethod http://localhost:3000/reset -Method Post -Headers $headers -ContentType "application/json" -Body $body
-Invoke-RestMethod http://localhost:3000/slots -Headers $headers
-$booking = @{slot_id="s1"; name="  Ada Obi  "; email="  ADA@EXAMPLE.COM "} | ConvertTo-Json
-Invoke-RestMethod http://localhost:3000/bookings -Method Post -Headers $headers -ContentType "application/json" -Body $booking
+node -e "fetch('http://localhost:3000/slots').then(r=>console.log('HTTP:',r.status))"
 ```
 
-**Warning:** `/reset` deletes all bookings. It exists because the Koya assessment contract explicitly requires it. Do not click the demo reset after final submission unless the reviewer instructs you to.
+**Authenticated slot listing (uses the key from `.env.local` without printing it):**
+
+```powershell
+node --env-file=.env.local -e "fetch('http://localhost:3000/slots',{headers:{'X-API-Key':process.env.BOOKING_API_KEY}}).then(async r=>console.log(r.status,await r.json()))"
+```
+
+**Booking history for a test email:**
+
+```powershell
+node --env-file=.env.local -e "fetch('http://localhost:3000/bookings?email=ada@example.com',{headers:{'X-API-Key':process.env.BOOKING_API_KEY}}).then(async r=>console.log(r.status,await r.json()))"
+```
+
+Replace `ada@example.com` with the test email you booked under. `200` with `bookings: []` is a successful query with **no matches**, not a failure.
+
+## Testing
+
+### Non-destructive checks (run anytime)
+
+```powershell
+npm.cmd test
+npm.cmd run build
+```
+
+- `npm.cmd test` runs the repository's unit/structural checks, including demo-schedule and patient-overlap logic.
+- `npm.cmd run build` verifies a production Next.js build and TypeScript checking.
+- These checks do **not** intentionally reset the Neon database.
+
+### Destructive 37-check API smoke test (disposable database only)
+
+**DO NOT run this against production or a database whose bookings you wish to keep.** `scripts/smoke.mjs` starts by calling **`POST /reset`**, which deletes existing bookings and replaces slots.
+
+1. Point `.env.local` and the running local server to a **disposable development database**.
+2. Start the local server with `npm.cmd run dev`.
+3. In a second terminal, run:
+
+```powershell
+node --env-file=.env.local scripts/smoke.mjs
+```
+
+The script tests authentication, reset/listing, validation, lookup, concurrency, cancellation, idempotency, pagination, email rate limiting and `Retry-After`. A successful run reports `PASS: 37 checks`. It tests the **running server** and the database configured on **that server**, not a hidden copy of the assessment grader. Restart your server after changing `.env.local`.
+
+You can also point it at a disposable HTTPS deployment by supplying `API_BASE_URL`, **but never run the reset-based smoke test against the submission database**.
+
+### Manual UI regression checklist
+
+1. Book a slot and confirm its status changes from available to booked.
+2. Refresh the page, then restart Next.js. Retrieve the booking from **My appointments** using the same test email.
+3. Cancel it from booking history; verify **cancelled** is shown and the slot becomes available.
+4. Use the same test email for different doctors at non-overlapping times; both should book.
+5. Test Dr Ade at 9:00 followed by Dr Okafor at 9:15 on the same date: the UI should warn; Dr Hassan at 9:30 should not overlap the 9:00 booking.
+6. Use the **Filter by doctor** control, then return to **All doctors**.
+7. Check mobile layout, API-key error handling and booking history pagination.
 
 ## Deploy to Vercel
 
-1. Push the project to a new GitHub repository (e.g. `realxpen/koya-clinic-booking`). Confirm `.env.local` is not staged.
-2. Import that GitHub repository on Vercel and use the **Next.js** framework preset.
-3. Configure environment variables `DATABASE_URL` and `BOOKING_API_KEY` for Production (use the same dedicated Neon database and a unique key).
-4. Deploy. Your submission **API base URL** and **webpage URL** can both be the root URL of the deployment, e.g. `https://your-project.vercel.app`. API paths are directly under the root (`/slots`, `/bookings`, `/reset`).
-5. Open the live site, enter your booking API key, seed demo slots once, book and cancel, verify the booking persists after refresh.
-6. Submit your API URL, API key, webpage URL, GitHub URL and **actual Loom recording** (5 minutes max). Keep it running and unchanged after submission.
+The repository is linked to the **CareSlot** Vercel project under the configured Vercel account. If rebuilding the project from scratch, import **https://github.com/realxpen/CareSlot**, set framework to **Next.js**, root directory to the repository root, and production branch to **`main`**.
 
-## Security notes
+1. Push committed changes to GitHub. **Do not commit `.env.local`.**
+2. In the Vercel project, open **Settings → Environment Variables**.
+3. Add `DATABASE_URL` and `BOOKING_API_KEY` as **sensitive** variables for **Production** (and Preview only if you have a safe separate preview database/key). Apply `db/schema.sql` to the chosen production database first.
+4. Deploy or **redeploy after changing variables**; existing builds do not automatically pick up new values.
+5. Wait until the latest **production** deployment is marked **Ready**, and verify the correct GitHub commit is deployed.
+6. Check that the public production alias is accessible in an **incognito browser** without Vercel login. Review project Deployment Protection/SSO settings if it is blocked.
+7. Open the homepage and connect using the *matching production* API key. Confirm `GET /slots` works; use test-only slots/bookings to verify booking, cancellation and persistence.
+8. Verify both the **API base URL** and webpage URL, using the same root HTTPS hostname (without `/slots` or `/api` added). The actual public hostname is whatever Vercel shows as the active production domain.
 
-- `BOOKING_API_KEY` and `DATABASE_URL` must **never** be committed to GitHub. `.env.local` is gitignored.
-- The web UI asks for the API key at runtime and stores it only in browser `sessionStorage`; the key is **not** baked into publicly served JavaScript or HTML. Only give the key to Koya and to trusted reviewers.
-- This is an assessment demo, **not** a production medical record system. Do not collect real patient health information.
+**Caution:** Vercel Hobby accounts can temporarily reject redeployments after hitting a deployment quota. If a redeploy is blocked, do not assume the old Ready deployment has the latest environment settings or code. Retry when the restriction clears or use a supported alternative host. Do not submit an unverified site.
 
-## API and test overview
+**Data safety:** the website's reset action and `scripts/smoke.mjs` are destructive. Avoid both on a live assessment database once you have prepared data for Koya to review.
 
-The server implements: `POST /reset`, `GET /slots`, `POST /bookings`, `GET /bookings`, `GET /bookings/:id`, `DELETE /bookings/:id`. The browser UI is at `/`.
+## Koya assessment handoff
 
-For a final check, try: missing/wrong key → 401; invalid input → 400; missing slot → 404; occupied slot → 409; past slot → 400; cancelled slot rebook → 201; reused idempotency key with changed body → 422; pagination with next_cursor; sixth same-email booking attempt inside 60 seconds → 429. Test simultaneous booking requests to verify only one confirms.
+Before submission, confirm the currently required fields/deadline on https://tally.so/r/1WPoL4. The Cohort 4 assessment instructions previously specified a **Sunday, 15 November 2026** deadline and a **Loom video of up to 5 minutes**; follow the latest instructions shown in your own assessment form.
 
-## Loom outline (4–5 minutes)
+Submit/prepare:
 
-1. (0:00–0:30) Explain what the app solves and show the deployed URL.
-2. (0:30–1:30) Enter key, view slots, book and show confirmation; cancel to free a slot.
-3. (1:30–2:30) Show `/slots` and `/bookings` in the API, including authentication and validation.
-4. (2:30–3:30) Explain the DB `only_one_confirmed_booking_per_slot` index, row lock and idempotency behavior.
-5. (3:30–4:30) Show GitHub repo, schema, Neon persistence, and deployment; briefly mention rate limiting.
+- [ ] Verified public **HTTPS API base URL** (root hostname, not an individual endpoint).
+- [ ] **Booking API key**, provided only through Koya's private submission field.
+- [ ] Verified public **website URL** (can be the same hostname as the API).
+- [ ] GitHub repository: https://github.com/realxpen/CareSlot
+- [ ] Loom demonstration link with appropriate access permissions.
+- [ ] Public site reachable without Vercel sign-in; correct production environment variables; no unexpected errors.
+- [ ] Repository and deployed version are in sync; do not reset or break the deployment after submission.
+
+Suggested Loom walkthrough (about 4–5 minutes):
+
+1. **0:00–0:30:** Introduce CareSlot and show the working HTTPS page.
+2. **0:30–1:30:** Connect as assessment reviewer, filter six doctors, select and confirm a booking.
+3. **1:30–2:15:** Show **My appointments**, refresh/retrieve history, then cancel and show the slot freed.
+4. **2:15–3:00:** Demonstrate the **overlap warning**, explaining that the override is intentional for API contract compatibility.
+5. **3:00–4:00:** Show protected API responses, `Idempotency-Key`, pagination and the PostgreSQL double-booking constraint (without showing secrets).
+6. **4:00–4:45:** Briefly show tests/GitHub/deployment and close.
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| PowerShell says `npm.ps1 cannot be loaded` | Use `npm.cmd ci`, `npm.cmd test`, `npm.cmd run dev` or `npm.cmd run build`. |
+| `ECONNREFUSED` / site won't open | Start `npm.cmd run dev` and ensure it is listening on the URL/port you are testing. |
+| `401` from an API endpoint | Ensure the `X-API-Key` header matches the key configured on **that server**; reconnect if you changed the key. |
+| `500 {"error":"internal server error"}` | Inspect the **server terminal / Vercel function logs** for `Booking API error:`. Check the connection string, Neon availability and that the schema was applied. Do not share raw secrets. |
+| `200 {"bookings":[],"next_cursor":null}` | Successful request, but no booking matches that email. Verify spelling/case and whether a reset erased earlier records. |
+| `409` when booking | Slot already has a confirmed booking. Select another slot or cancel the existing booking. |
+| `429` when booking repeatedly | The same email has exceeded five attempts within a rolling minute. Wait for the `Retry-After` interval; failed bookings also count. |
+| Only three doctors show up | The database still has older demo slots. Pull latest `main`, then add new slots using the **development-only add-only script**, refresh, and select **All doctors**. |
+| Changes on GitHub are not on the website | A Git push does not update local code; run `git pull origin main`. A production website needs a successful Vercel deployment of the newest commit. |
+| Vercel redeploy blocked by quota | Wait until your plan's quota permits a fresh deployment; an old Ready deployment is **not** proof the new commit or env vars are active. |
+| Booking appears gone after server restart | Search **My appointments** with the same email; check that the server is connected to the same Neon database as before and that no reset ran. |
+| `node` cannot import `.ts` in the add-only script | Check Node.js version (`node --version`) and run the exact documented `--experimental-strip-types` command. |
+
+## Security and known limitations
+
+- The **Koya API key** secures the assessment endpoints; it is not a patient-specific credential. The browser temporarily holds the key in `sessionStorage` and includes it in request headers, so enter it only in a trusted testing browser.
+- The **My appointments** email lookup does **not** verify email ownership. In a real healthcare application, implement a proper patient identity and authorization system before allowing booking history access or cancellations.
+- Frontend overlap warnings are **advisory**. Enforcing patient-level no-overlap across concurrent API clients would require a separate atomic server/database rule, which was deliberately **not added** because it would change Koya's expected behavior.
+- The API does not implement a rescheduling endpoint, reminders, real doctor calendars, medical records or role-based clinic administration.
+- Demo doctors, slots and names are synthetic. **Never store real patient medical data** in the assessment environment.
+- `/reset` and the smoke test delete existing booking records; use only deliberately disposable databases for destructive checks.
+- Do not commit credentials, print environment values into logs, embed `BOOKING_API_KEY` in a public bundle or publish Neon connection strings.
+
+---
+
+**Source of truth:** the [Koya OpenAPI specification](docs/koya-openapi.json) governs the API contract. The expanded user interface and demo tooling must not break that contract.
