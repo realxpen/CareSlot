@@ -29,6 +29,20 @@ A full-stack Next.js + TypeScript + Neon PostgreSQL application implementing the
    ```
 5. Open http://localhost:3000, paste your assessment booking API key in the **Booking API key** field and click **Connect**. Then choose **Create demo slots** (this calls `/reset` and clears all existing bookings), book a slot and verify the confirmation.
 
+## Patient appointment overlap advisory (assessment-safe)
+
+The website checks whether an email already has a **confirmed** appointment whose time interval overlaps a selected slot. It uses the existing authenticated `GET /bookings?email=...` API (including cursor pagination) and compares its confirmed booking slot times against `GET /slots`. Two appointments that meet exactly at the boundary (e.g. 09:00–09:30 and 09:30–10:00) are permitted; cancelled bookings do not count.
+
+The website shows a warning rather than silently booking a conflicting slot. For assessment compatibility, it also offers **Continue anyway (assessment)**. **No server-side behavior or endpoint is changed.** Koya's automated tests can continue to book different slot IDs, and PostgreSQL still blocks double-booking the same slot. This client-side preflight is advisory, not concurrency-safe enforcement: another booking can happen between the lookup and the POST.
+
+For a manual overlap demo, use **only an isolated development Neon database**, then run:
+
+```powershell
+node --env-file=.env.local scripts/seed-conflict-demo.mjs --yes
+```
+
+The script adds three uniquely identified demonstration slots **without resetting or deleting existing bookings**: 09:00–09:30, 09:15–09:45 (overlapping), and 09:30–10:00 (back-to-back), all on a future date in Lagos time. Book the first with a test email; try the second with that same email to see the warning, then the third to confirm adjacent slots are allowed. The warning includes an explicit assessment-only override. Do not run this against production or a real patient database.
+
 ## Manual booking persistence and history test (no reset)
 
 **Use the development database, not production.** Unlike the destructive smoke test, these steps preserve existing bookings:

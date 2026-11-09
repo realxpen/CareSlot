@@ -23,3 +23,12 @@
 .bookingReference{font-size:12px;color:#657b67;overflow-wrap:anywhere;max-width:100%}
 .loadMore{margin-top:16px}
 @media(max-width:600px){.historyHeading{flex-direction:column}.historySearchRow{flex-direction:column}.historyItemTop{flex-direction:column;gap:10px}.historyItemBottom{align-items:flex-start}.historyItemBottom button{width:100%}}
+
+/* Advisory-only patient appointment overlap warning */
+.conflictNotice{grid-column:1/-1;border:1px solid #ebc891;background:#fff8eb;color:#60451b;border-radius:13px;padding:17px 20px;line-height:1.5}
+.conflictNotice strong{font-size:16px}
+.conflictNotice p{font-size:13px;margin:8px 0 14px}
+.conflictActions{display:flex;gap:9px;flex-wrap:wrap}
+.conflictActions button{font-weight:700;border-radius:8px;padding:10px 13px}
+.conflictProceed{background:#5f4a22;color:#fff;border:1px solid #5f4a22}
+.conflictDismiss{background:transparent;color:#60451b;border:1px solid #c7a36f}
